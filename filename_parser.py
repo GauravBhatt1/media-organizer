@@ -28,6 +28,11 @@ class ParsedFilename:
     is_multi_episode: bool = False
     episode_end: Optional[int] = None
     release_group: Optional[str] = None
+    languages: list = None  # List of detected languages like ['Hindi', 'English']
+    
+    def __post_init__(self):
+        if self.languages is None:
+            self.languages = []
 
 
 class FilenameParser:
@@ -85,6 +90,30 @@ class FilenameParser:
     # Release group pattern (at end of filename)
     RELEASE_GROUP_PATTERN = r'[-\s]([A-Za-z0-9]+)(?:\.[a-z]{2,4})?$'
     
+    # Language patterns
+    LANGUAGE_PATTERNS = [
+        (r'\bhindi\b', 'Hindi'),
+        (r'\benglis?h?\b', 'English'),
+        (r'\btamil\b', 'Tamil'),
+        (r'\btelugu\b', 'Telugu'),
+        (r'\bkannada\b', 'Kannada'),
+        (r'\bmalayalam\b', 'Malayalam'),
+        (r'\bmarathi\b', 'Marathi'),
+        (r'\bpunjabi\b', 'Punjabi'),
+        (r'\bbengali\b', 'Bengali'),
+        (r'\bgujrati\b', 'Gujarati'),
+        (r'\bkorean\b', 'Korean'),
+        (r'\bjapanese\b', 'Japanese'),
+        (r'\bchinese\b', 'Chinese'),
+        (r'\bspanish\b', 'Spanish'),
+        (r'\bfrench\b', 'French'),
+        (r'\bgerman\b', 'German'),
+        (r'\bitalian\b', 'Italian'),
+        (r'\brussian\b', 'Russian'),
+        (r'\bdual[.\s-]?audio\b', 'Dual Audio'),
+        (r'\bmulti\b', 'Multi'),
+    ]
+    
     def __init__(self, video_extensions: list = None):
         """
         Initialize parser.
@@ -127,6 +156,9 @@ class FilenameParser:
         # Extract release group
         release_group = self._extract_release_group(name)
         
+        # Extract languages
+        languages = self._extract_languages(name)
+        
         # Clean and extract title
         title = self._extract_title(name, year, season, episode)
         
@@ -141,7 +173,8 @@ class FilenameParser:
             extension=extension,
             is_multi_episode=is_multi,
             episode_end=episode_end,
-            release_group=release_group
+            release_group=release_group,
+            languages=languages
         )
         
         logger.debug(f"Parsed result: title='{title}', year={year}, "
@@ -228,6 +261,29 @@ class FilenameParser:
             if group.lower() not in ['mkv', 'mp4', 'avi', 'mov', 'wmv']:
                 return group
         return None
+    
+    def _extract_languages(self, name: str) -> list:
+        """Extract languages from filename."""
+        name_lower = name.lower()
+        languages = []
+        
+        for pattern, lang in self.LANGUAGE_PATTERNS:
+            if re.search(pattern, name_lower):
+                # Handle Dual Audio specially
+                if lang == 'Dual Audio':
+                    # Try to detect which languages
+                    if 'hindi' in name_lower and 'english' in name_lower:
+                        if 'Hindi' not in languages:
+                            languages.append('Hindi')
+                        if 'English' not in languages:
+                            languages.append('English')
+                    elif lang not in languages:
+                        languages.append(lang)
+                elif lang not in languages:
+                    languages.append(lang)
+        
+        logger.debug(f"Detected languages: {languages}")
+        return languages
     
     def _extract_title(self, name: str, year: Optional[int], 
                        season: Optional[int], episode: Optional[int]) -> str:
