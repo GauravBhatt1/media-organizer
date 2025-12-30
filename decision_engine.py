@@ -77,11 +77,21 @@ class DecisionEngine:
         Returns:
             MoveDecision object with action and destination
         """
-        filename = PurePosixPath(path).name
+        path_obj = PurePosixPath(path)
+        filename = path_obj.name
         logger.info(f"Making decision for: {remote}:{path}")
         
-        # Parse filename
+        # Parse filename first
         parsed = self.parser.parse(filename)
+        
+        # If filename parsing gave poor results, try parent folder name
+        if self._is_generic_parse(parsed):
+            parent_folder = path_obj.parent.name
+            if parent_folder and parent_folder not in ('.', 'files'):
+                logger.debug(f"Filename generic, trying folder name: {parent_folder}")
+                folder_parsed = self.parser.parse(parent_folder)
+                # Use folder metadata if better
+                parsed = self._merge_parsed(parsed, folder_parsed)
         
         if parsed.quality == "Unknown":
             logger.debug(f"Unknown quality for {filename}, defaulting to 1080p")
@@ -159,6 +169,48 @@ class DecisionEngine:
             content_type=content_type,
             file_to_delete=file_to_delete,
             delete_remote=delete_remote
+        )
+    
+    def _is_generic_parse(self, parsed) -> bool:
+        """Check if parsed result is too generic (likely just file extension)."""
+        generic_names = {'movie', 'video', 'film', 'sample', 'rarbg', 'yify', 'yts'}
+        title_lower = parsed.title.lower().strip()
+        
+        # Too short or generic
+        if len(title_lower) <= 3:
+            return True
+        if title_lower in generic_names:
+            return True
+        # No year found and title looks like extension or codec
+        if not parsed.year and title_lower in {'mkv', 'mp4', 'avi', 'x264', 'x265', 'hevc'}:
+            return True
+        return False
+    
+    def _merge_parsed(self, file_parsed, folder_parsed):
+        """Merge parsed info from filename and folder, preferring folder for title/year."""
+        from filename_parser import ParsedFilename
+        
+        # Use folder title/year if file title is generic
+        title = folder_parsed.title if not self._is_generic_parse(folder_parsed) else file_parsed.title
+        year = folder_parsed.year or file_parsed.year
+        
+        # Prefer file for season/episode (more reliable)
+        season = file_parsed.season or folder_parsed.season
+        episode = file_parsed.episode or folder_parsed.episode
+        
+        # Quality: prefer higher quality source, or folder if file unknown
+        quality = file_parsed.quality
+        if quality == "Unknown" and folder_parsed.quality != "Unknown":
+            quality = folder_parsed.quality
+        
+        return ParsedFilename(
+            title=title,
+            year=year,
+            season=season,
+            episode=episode,
+            quality=quality,
+            extension=file_parsed.extension,
+            original=file_parsed.original
         )
     
     def _clean_title(self, title: str) -> str:
