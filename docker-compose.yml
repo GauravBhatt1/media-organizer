@@ -5,47 +5,12 @@ services:
     build: .
     container_name: media-organizer
     restart: unless-stopped
-    
     environment:
-      # TMDB API Key
       - TMDB_API_KEY=07204b56f116aa64c5b68ec20c12ae75
-      # Scan interval in seconds (default: 300 = 5 minutes)
-      - SCAN_INTERVAL=300
-      # Set to "true" for dry-run mode (no actual file moves)
+      - SCAN_INTERVAL=3600
       - DRY_RUN=false
-    
+      - LOG_LEVEL=INFO
     volumes:
-      # rclone config - REQUIRED: Update this path to your rclone config location
-      # Example: /home/ubuntu/.config/rclone or /root/.config/rclone
-      - ${RCLONE_CONFIG_DIR:-/root/.config/rclone}:/root/.config/rclone:ro
-      
-      # Persistent database storage
+      - /home/ubuntu/.config/rclone:/root/.config/rclone:ro
       - ./data:/app/data
-      
-      # Logs
       - ./logs:/app/logs
-      
-      # Custom config (optional - uses default if not provided)
-      # - ./config.yaml:/app/config.yaml:ro
-    
-    # Health check
-    healthcheck:
-      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('/app/data/media_organizer.db') else 1)"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    
-    # Resource limits (optional)
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 128M
-
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
