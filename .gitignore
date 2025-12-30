@@ -1,0 +1,19 @@
+# Environment files (contain secrets)
+.env
+
+# Database
+*.db
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/

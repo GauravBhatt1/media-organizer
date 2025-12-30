@@ -1,0 +1,106 @@
+# Media File Organizer Configuration
+# For Jellyfin-compatible folder structure
+
+remotes:
+  # Movies remotes (will try first, fallback to alternative if full)
+  movies:
+    - name: "movies"
+      type: "movie"
+      destination_folder: ""  # Root - organized files stay in same remote
+    - name: "movies1"
+      type: "movie"
+      destination_folder: ""
+  
+  # TV Shows remote
+  tvshows:
+    - name: "tvshows"
+      type: "tvshow"
+      destination_folder: ""
+  
+  # Anime remote
+  anime:
+    - name: "anime"
+      type: "anime"
+      destination_folder: ""
+  
+  # K-Drama remote
+  kdrama:
+    - name: "kdrama"
+      type: "kdrama"
+      destination_folder: ""
+
+# All remotes to scan (flat list for scanner)
+scan_remotes:
+  - "movies"
+  - "movies1"
+  - "tvshows"
+  - "anime"
+  - "kdrama"
+
+# Scan settings
+scan:
+  interval_minutes: 5
+  stability_check_seconds: 120  # 2 minutes - file must be unchanged
+  run_on_startup: true
+
+# Quality settings (higher index = higher priority)
+quality:
+  priority:
+    - "CAM"
+    - "HDTS"
+    - "HDTC"
+    - "720p"
+    - "1080p"
+    - "2160p"
+    - "4K"
+  
+  # Auto-replace lower quality when higher arrives
+  auto_replace: true
+  
+  # Minimum quality to replace CAM (720p and above)
+  cam_replacement_threshold: "720p"
+
+# TMDB settings
+tmdb:
+  language: "en-US"
+  include_adult: false
+
+# Jellyfin folder structure templates
+folder_structure:
+  # Movies: Movie Name (Year)/Movie Name (Year) - Quality.ext
+  movie: "{title} ({year})"
+  movie_file: "{title} ({year}) - {quality}"
+  
+  # TV Shows: Show Name (Year)/Season XX/Show Name SXXEXX.ext
+  tvshow: "{title} ({year})/Season {season:02d}"
+  tvshow_file: "{title} S{season:02d}E{episode:02d}"
+  
+  # Anime: Same as TV Shows
+  anime: "{title} ({year})/Season {season:02d}"
+  anime_file: "{title} S{season:02d}E{episode:02d}"
+  
+  # K-Drama: Same as TV Shows
+  kdrama: "{title} ({year})/Season {season:02d}"
+  kdrama_file: "{title} S{season:02d}E{episode:02d}"
+
+# File extensions to process
+video_extensions:
+  - ".mkv"
+  - ".mp4"
+  - ".avi"
+  - ".mov"
+  - ".wmv"
+  - ".flv"
+  - ".webm"
+  - ".m4v"
+
+# Logging
+logging:
+  level: "INFO"
+  file: "organizer.log"
+  max_size_mb: 10
+  backup_count: 5
+
+# Database
+database:
+  path: "organizer.db"

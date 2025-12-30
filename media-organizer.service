@@ -1,0 +1,28 @@
+[Unit]
+Description=Media File Organizer for Jellyfin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/media-organizer
+Environment=PATH=/home/ubuntu/media-organizer/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/ubuntu/media-organizer/venv/bin/python main.py --daemon
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=media-organizer
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/media-organizer
+
+[Install]
+WantedBy=multi-user.target
