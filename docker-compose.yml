@@ -11,6 +11,6 @@ services:
       - DRY_RUN=false
       - LOG_LEVEL=INFO
     volumes:
-      - /home/ubuntu/.config/rclone:/root/.config/rclone:ro
+      - /home/ubuntu/.config/rclone:/root/.config/rclone
       - ./data:/app/data
       - ./logs:/app/logs

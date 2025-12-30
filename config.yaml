@@ -38,13 +38,14 @@ scan_remotes:
   - "kdrama"
 
 # Source folders to scan within remotes (messy uploads go here)
-# Files from these folders will be organized to root level
+# Empty string means scan from root of remote
+# Files will be organized into destination folders
 source_folders:
-  movies: "files"
-  movies1: "files"
-  tvshows: "files"
-  anime: "files"
-  kdrama: "files"
+  movies: ""
+  movies1: ""
+  tvshows: ""
+  anime: ""
+  kdrama: ""
 
 # Destination folders for organized content
 destination_folders:
