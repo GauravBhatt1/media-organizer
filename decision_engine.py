@@ -250,37 +250,47 @@ class DecisionEngine:
         lang_str = "-".join(languages) if languages else ""
         
         if content_type == 'movie':
-            # Movies: Movies/Movie Name (Year)/Movie Name (Year) - Hindi-English - 1080p.ext
-            movie_folder = f"{title} ({year_str})"
+            # Movies: Movies/Movie Name (Year) - Hindi-English/Movie Name (Year) - Hindi-English - 1080p.ext
+            
+            # Build folder name with language
+            folder_parts = [f"{title} ({year_str})"]
+            if lang_str:
+                folder_parts.append(lang_str)
+            movie_folder = " - ".join(folder_parts)
             
             # Build filename parts
-            parts = [f"{title} ({year_str})"]
+            file_parts = [f"{title} ({year_str})"]
             if lang_str:
-                parts.append(lang_str)
+                file_parts.append(lang_str)
             if quality and quality != "Unknown":
-                parts.append(quality)
+                file_parts.append(quality)
             
-            filename = " - ".join(parts) + extension
+            filename = " - ".join(file_parts) + extension
             
             if dest_folder:
                 return f"{dest_folder}/{movie_folder}/{filename}"
             return f"{movie_folder}/{filename}"
         
         else:
-            # TV Shows/Anime/K-Drama: TV Shows/Show Name (Year)/Season XX/Show Name SXXEXX - Hindi.ext
+            # TV Shows/Anime/K-Drama: TV Shows/Show Name (Year) - Hindi/Season XX/Show Name SXXEXX - Hindi.ext
             season_num = season if season else 1
             episode_num = episode if episode else 1
             
-            show_folder = f"{title} ({year_str})"
+            # Build show folder with language
+            folder_parts = [f"{title} ({year_str})"]
+            if lang_str:
+                folder_parts.append(lang_str)
+            show_folder = " - ".join(folder_parts)
+            
             season_folder = f"Season {season_num:02d}"
             
             # Build filename parts
             base = f"{title} S{season_num:02d}E{episode_num:02d}"
-            parts = [base]
+            file_parts = [base]
             if lang_str:
-                parts.append(lang_str)
+                file_parts.append(lang_str)
             
-            filename = " - ".join(parts) + extension
+            filename = " - ".join(file_parts) + extension
             
             if dest_folder:
                 return f"{dest_folder}/{show_folder}/{season_folder}/{filename}"
