@@ -57,12 +57,16 @@ class Scanner:
         Returns:
             List of ScannedFile objects
         """
-        logger.info(f"Scanning remote: {remote}")
+        # Get source folder for this remote (e.g., "files")
+        source_folder = self.config.get_source_folder(remote)
+        scan_path = source_folder if source_folder else ""
+        
+        logger.info(f"Scanning remote: {remote}:{scan_path or '/'}")
         
         try:
-            # Get all files recursively
-            files = self.rclone.list_files(remote, "", recursive=True)
-            logger.debug(f"Found {len(files)} items in {remote}")
+            # Get all files recursively from source folder
+            files = self.rclone.list_files(remote, scan_path, recursive=True)
+            logger.debug(f"Found {len(files)} items in {remote}:{scan_path}")
         except Exception as e:
             logger.error(f"Failed to scan remote {remote}: {e}")
             return []

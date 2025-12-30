@@ -176,14 +176,17 @@ class DecisionEngine:
         """
         Generate Jellyfin-compatible destination path.
         
-        Movies: Movie Name (Year)/Movie Name (Year) - Quality.ext
-        Series: Show Name (Year)/Season XX/Show Name SXXEXX.ext
+        Movies: Movies/Movie Name (Year)/Movie Name (Year) - Quality.ext
+        Series: TV Shows/Show Name (Year)/Season XX/Show Name SXXEXX.ext
         """
         year_str = str(year) if year else "Unknown"
         
+        # Get destination folder from config (e.g., "Movies", "TV Shows")
+        dest_folder = self.config.get_destination_folder(content_type)
+        
         if content_type == 'movie':
-            # Movies: Movie Name (Year)/Movie Name (Year) - Quality.ext
-            folder = f"{title} ({year_str})"
+            # Movies: Movies/Movie Name (Year)/Movie Name (Year) - Quality.ext
+            movie_folder = f"{title} ({year_str})"
             
             # Add quality to filename
             if quality and quality != "Unknown":
@@ -191,10 +194,12 @@ class DecisionEngine:
             else:
                 filename = f"{title} ({year_str}){extension}"
             
-            return f"{folder}/{filename}"
+            if dest_folder:
+                return f"{dest_folder}/{movie_folder}/{filename}"
+            return f"{movie_folder}/{filename}"
         
         else:
-            # TV Shows/Anime/K-Drama: Show Name (Year)/Season XX/Show Name SXXEXX.ext
+            # TV Shows/Anime/K-Drama: TV Shows/Show Name (Year)/Season XX/Show Name SXXEXX.ext
             season_num = season if season else 1
             episode_num = episode if episode else 1
             
@@ -202,6 +207,8 @@ class DecisionEngine:
             season_folder = f"Season {season_num:02d}"
             filename = f"{title} S{season_num:02d}E{episode_num:02d}{extension}"
             
+            if dest_folder:
+                return f"{dest_folder}/{show_folder}/{season_folder}/{filename}"
             return f"{show_folder}/{season_folder}/{filename}"
     
     def _check_quality_replacement(self, tmdb_id: int, tmdb_type: str,

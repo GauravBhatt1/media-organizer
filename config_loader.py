@@ -192,3 +192,13 @@ class Config:
         threshold_idx = self.get_quality_index(self.cam_replacement_threshold)
         new_idx = self.get_quality_index(new_quality)
         return new_idx >= threshold_idx
+    
+    def get_source_folder(self, remote_name: str) -> str:
+        """Get source folder to scan for a remote (where messy uploads are)."""
+        source_folders = self._config.get("source_folders", {})
+        return source_folders.get(remote_name, "")
+    
+    def get_destination_folder(self, content_type: str) -> str:
+        """Get destination folder for organized content by type."""
+        dest_folders = self._config.get("destination_folders", {})
+        return dest_folders.get(content_type, "")
