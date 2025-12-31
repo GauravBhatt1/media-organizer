@@ -57,7 +57,7 @@ destination_folders:
 # Scan settings
 scan:
   interval_minutes: 2
-  stability_check_seconds: 60  # 1 minute - file must be unchanged
+  stability_check_seconds: 10  # 10 seconds - file must be unchanged
   run_on_startup: true
 
 # Quality settings (higher index = higher priority)

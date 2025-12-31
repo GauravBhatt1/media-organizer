@@ -150,7 +150,13 @@ class Scanner:
         A file is considered stable if its size hasn't changed
         for the configured stability period.
         """
+        # First check if already marked stable in database
+        if self.db.is_file_stable(remote, path):
+            return True
+        
+        # New files need at least one more scan to confirm stability
         if stability_info.get("is_new"):
+            logger.debug(f"New file detected, will check stability on next scan: {remote}:{path}")
             return False
         
         last_change_str = stability_info.get("last_size_change")
@@ -160,13 +166,17 @@ class Scanner:
         try:
             last_change = datetime.fromisoformat(last_change_str)
             stability_threshold = timedelta(seconds=self.config.stability_check_seconds)
+            time_since_change = datetime.now() - last_change
             
-            if datetime.now() - last_change >= stability_threshold:
+            logger.debug(f"Stability check {remote}:{path}: {time_since_change.seconds}s since last change, threshold={self.config.stability_check_seconds}s")
+            
+            if time_since_change >= stability_threshold:
                 # Mark as stable in database
                 self.db.mark_file_stable(remote, path)
+                logger.info(f"File marked stable: {remote}:{path}")
                 return True
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Error parsing stability timestamp: {e}")
         
         return False
     
