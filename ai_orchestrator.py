@@ -15,13 +15,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Try to import OpenAI
+# Try to import OpenAI (works for both OpenAI and Groq)
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
-    logger.warning("OpenAI not installed. AI orchestration will use heuristics only.")
+    logger.warning("OpenAI library not installed. AI orchestration will use heuristics only.")
+
+# AI Provider constants
+AI_PROVIDER_GROQ = "groq"
+AI_PROVIDER_OPENAI = "openai"
+AI_PROVIDER_NONE = "none"
 
 
 @dataclass
@@ -125,24 +130,48 @@ Output: {"title": "Maa", "year": 2025, "category": "movie", "languages": ["Hindi
 Input: "Squid.Game.S02E01.720p.NF.WEB-DL.Korean.mkv" from remote "kdrama"
 Output: {"title": "Squid Game", "year": null, "category": "kdrama", "season": 2, "episode": 1, "languages": ["Korean"], "quality": "720p"}"""
 
-    def __init__(self, openai_api_key: Optional[str] = None):
-        """Initialize AI Orchestrator."""
-        self.api_key = openai_api_key or os.environ.get('OPENAI_API_KEY')
+    def __init__(self, openai_api_key: Optional[str] = None, groq_api_key: Optional[str] = None):
+        """Initialize AI Orchestrator with support for multiple AI providers."""
+        self.openai_key = openai_api_key or os.environ.get('OPENAI_API_KEY')
+        self.groq_key = groq_api_key or os.environ.get('GROQ_API_KEY')
         self.client = None
+        self.provider = AI_PROVIDER_NONE
+        self.model = None
         self.cache = AICache()
         
-        if self.api_key and OPENAI_AVAILABLE:
+        if not OPENAI_AVAILABLE:
+            logger.info("AI Orchestrator running in heuristic-only mode (openai library not installed)")
+            return
+        
+        # Try Groq first (faster and has generous free tier)
+        if self.groq_key:
             try:
-                self.client = OpenAI(api_key=self.api_key)
+                self.client = OpenAI(
+                    api_key=self.groq_key,
+                    base_url="https://api.groq.com/openai/v1"
+                )
+                self.provider = AI_PROVIDER_GROQ
+                self.model = "llama-3.3-70b-versatile"  # Fast and capable
+                logger.info("AI Orchestrator initialized with Groq (FREE tier)")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Groq: {e}")
+        
+        # Fall back to OpenAI if Groq not available
+        if not self.client and self.openai_key:
+            try:
+                self.client = OpenAI(api_key=self.openai_key)
+                self.provider = AI_PROVIDER_OPENAI
+                self.model = "gpt-4o-mini"
                 logger.info("AI Orchestrator initialized with OpenAI")
             except Exception as e:
                 logger.warning(f"Failed to initialize OpenAI: {e}")
-        else:
-            logger.info("AI Orchestrator running in heuristic-only mode")
+        
+        if not self.client:
+            logger.info("AI Orchestrator running in heuristic-only mode (no API keys provided)")
     
     def _call_ai(self, filename: str, folder: str, remote_type: str) -> Optional[Dict]:
-        """Call OpenAI API for file analysis."""
-        if not self.client:
+        """Call AI API for file analysis (supports OpenAI and Groq)."""
+        if not self.client or not self.model:
             return None
         
         user_prompt = f"""Analyze this media file:
@@ -164,8 +193,9 @@ Return a JSON object with these fields:
 Return ONLY valid JSON, no markdown."""
 
         try:
+            logger.debug(f"Calling {self.provider} API with model {self.model}")
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt}
