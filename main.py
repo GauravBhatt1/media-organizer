@@ -105,9 +105,9 @@ class MediaOrganizer:
         # Scanner
         self.scanner = Scanner(self.config, self.rclone, self.db)
         
-        # Decision engine
+        # Decision engine (with rclone for destination checks)
         self.decision_engine = DecisionEngine(
-            self.config, self.db, self.parser, self.tmdb
+            self.config, self.db, self.parser, self.tmdb, self.rclone
         )
         
         # Executor

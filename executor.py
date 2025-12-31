@@ -72,6 +72,9 @@ class Executor:
         if decision.action == 'replace':
             return self._execute_replace(decision)
         
+        if decision.action == 'delete_source':
+            return self._execute_delete_source(decision)
+        
         logger.error(f"Unknown action: {decision.action}")
         return ExecutionResult(
             success=False,
@@ -182,6 +185,54 @@ class Executor:
         
         logger.info(f"Successfully replaced with higher quality: {decision.quality}")
         return ExecutionResult(success=True, decision=decision)
+    
+    def _execute_delete_source(self, decision: MoveDecision) -> ExecutionResult:
+        """
+        Delete source file because destination already has same/better quality.
+        This prevents duplicates when organizing files that are already organized.
+        """
+        logger.info(f"Deleting duplicate source: {decision.source_remote}:{decision.source_path}")
+        logger.info(f"(Destination already has: {decision.file_to_delete})")
+        
+        if self.dry_run:
+            logger.info("[DRY RUN] Would delete source file (duplicate)")
+            return ExecutionResult(success=True, decision=decision)
+        
+        try:
+            # Delete the source file
+            self.rclone.delete_file(decision.source_remote, decision.source_path)
+            
+            # Record as processed (with status 'duplicate_deleted')
+            self.db.add_processed_file(
+                remote=decision.source_remote,
+                original_path=decision.source_path,
+                destination_path=decision.destination_path or '',
+                file_size=0,
+                tmdb_id=decision.tmdb_id or 0,
+                tmdb_type=decision.tmdb_type or 'unknown',
+                title=decision.title,
+                year=decision.year or 0,
+                season=decision.season,
+                episode=decision.episode,
+                quality=decision.quality,
+                content_type=decision.content_type,
+                status='duplicate_deleted'
+            )
+            
+            # Clean up stability tracking
+            self.db.remove_stability_tracking(decision.source_remote, decision.source_path)
+            
+            # Try to remove empty directories
+            self._cleanup_empty_dirs(decision.source_remote, decision.source_path)
+            
+            logger.info(f"Successfully deleted duplicate: {decision.source_path}")
+            return ExecutionResult(success=True, decision=decision)
+        
+        except RcloneError as e:
+            error_msg = f"Failed to delete source: {e}"
+            logger.error(error_msg)
+            self._record_failure(decision, error_msg)
+            return ExecutionResult(success=False, decision=decision, error_message=error_msg)
     
     def _record_success(self, decision: MoveDecision):
         """Record successful processing in database."""

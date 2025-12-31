@@ -16,6 +16,7 @@ from config_loader import Config
 from database import Database
 from filename_parser import FilenameParser, ParsedFilename
 from tmdb_matcher import TMDBMatcher, TMDBMatch
+from rclone_wrapper import RcloneWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MoveDecision:
     """Represents a decision about how to handle a file."""
-    action: str  # 'move', 'replace', 'skip', 'error'
+    action: str  # 'move', 'replace', 'skip', 'delete_source', 'error'
     source_remote: str
     source_path: str
     destination_remote: str
@@ -63,7 +64,8 @@ class DecisionEngine:
     TMDB_CONFIDENCE_THRESHOLD = 0.6
     
     def __init__(self, config: Config, db: Database, 
-                 parser: FilenameParser, tmdb: TMDBMatcher):
+                 parser: FilenameParser, tmdb: TMDBMatcher,
+                 rclone: RcloneWrapper = None):
         """
         Initialize decision engine.
         
@@ -72,11 +74,13 @@ class DecisionEngine:
             db: Database instance
             parser: FilenameParser instance
             tmdb: TMDBMatcher instance
+            rclone: RcloneWrapper instance for destination checks
         """
         self.config = config
         self.db = db
         self.parser = parser
         self.tmdb = tmdb
+        self.rclone = rclone
         
         # Lazy-load web searcher (avoid import if not needed)
         self._web_searcher = None
@@ -269,7 +273,62 @@ class DecisionEngine:
             languages=languages
         )
         
-        # Check for quality replacement
+        # FIRST: Check if destination already exists on disk
+        existing_check = self._check_destination_exists(
+            remote=remote,
+            destination_path=destination_path,
+            title=title,
+            year=year,
+            content_type=content_type,
+            new_quality=parsed.quality,
+            season=parsed.season,
+            episode=parsed.episode
+        )
+        
+        if existing_check:
+            action, file_to_delete, delete_remote = existing_check
+            
+            # If same/better quality exists, delete source file instead of moving
+            if action == 'delete_source':
+                logger.info(f"Destination exists with same/better quality, will delete source")
+                return MoveDecision(
+                    action='delete_source',
+                    source_remote=remote,
+                    source_path=path,
+                    destination_remote=remote,
+                    destination_path=destination_path,
+                    tmdb_id=tmdb_match.tmdb_id,
+                    tmdb_type=tmdb_match.tmdb_type,
+                    title=title,
+                    year=year,
+                    season=parsed.season,
+                    episode=parsed.episode,
+                    quality=parsed.quality,
+                    content_type=content_type,
+                    file_to_delete=file_to_delete,
+                    delete_remote=delete_remote
+                )
+            elif action == 'replace':
+                logger.info(f"New file has better quality, will replace existing")
+                return MoveDecision(
+                    action='replace',
+                    source_remote=remote,
+                    source_path=path,
+                    destination_remote=remote,
+                    destination_path=destination_path,
+                    tmdb_id=tmdb_match.tmdb_id,
+                    tmdb_type=tmdb_match.tmdb_type,
+                    title=title,
+                    year=year,
+                    season=parsed.season,
+                    episode=parsed.episode,
+                    quality=parsed.quality,
+                    content_type=content_type,
+                    file_to_delete=file_to_delete,
+                    delete_remote=delete_remote
+                )
+        
+        # SECOND: Check database for quality tracking (for files we previously moved)
         action, file_to_delete, delete_remote = self._check_quality_replacement(
             tmdb_id=tmdb_match.tmdb_id,
             tmdb_type=tmdb_match.tmdb_type,
@@ -297,6 +356,85 @@ class DecisionEngine:
             file_to_delete=file_to_delete,
             delete_remote=delete_remote
         )
+    
+    def _check_destination_exists(self, remote: str, destination_path: str,
+                                   title: str, year: int, content_type: str,
+                                   new_quality: str, season: int = None, 
+                                   episode: int = None) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
+        """
+        Check if the EXACT SAME file (movie or episode) already exists on disk.
+        Returns (action, file_to_delete, delete_remote) or None if no existing file.
+        
+        For movies: Checks if same movie exists in the folder
+        For TV shows: Checks if same season/episode exists (not just any episode)
+        
+        Actions:
+        - 'delete_source': Existing file has same/better quality, delete source
+        - 'replace': New file has better quality, replace existing
+        - None: No existing file found
+        """
+        if not self.rclone:
+            return None
+        
+        try:
+            # Get the folder path (without filename)
+            dest_folder = str(PurePosixPath(destination_path).parent)
+            dest_filename = str(PurePosixPath(destination_path).name)
+            
+            # Check if folder exists
+            if not self.rclone.dir_exists(remote, dest_folder):
+                return None
+            
+            # List files in the destination folder
+            files = self.rclone.list_files(remote, dest_folder, recursive=False)
+            
+            if not files:
+                return None
+            
+            # Look for existing media files in this folder
+            for f in files:
+                if f.is_dir:
+                    continue
+                
+                # Check if it's a media file
+                ext_lower = f.name.lower().split('.')[-1] if '.' in f.name else ''
+                if ext_lower not in ('mkv', 'mp4', 'avi', 'mov', 'wmv', 'm4v'):
+                    continue
+                
+                # Parse existing file to get metadata
+                existing_parsed = self.parser.parse(f.name)
+                
+                # For TV shows: MUST match the same season AND episode
+                if content_type in ('tvshow', 'anime', 'kdrama'):
+                    # Only consider it a duplicate if SAME season and episode
+                    if existing_parsed.season != season or existing_parsed.episode != episode:
+                        logger.debug(f"Skipping {f.name} - different episode (S{existing_parsed.season}E{existing_parsed.episode} vs S{season}E{episode})")
+                        continue
+                    
+                    logger.info(f"Found existing episode S{season}E{episode}: {f.path}")
+                else:
+                    # For movies: any media file in this specific movie folder is the same movie
+                    # (Movie folders are named "MovieName (Year)" and should only have one movie)
+                    logger.info(f"Found existing movie file: {f.path}")
+                
+                existing_quality = existing_parsed.quality
+                logger.info(f"Comparing qualities: existing={existing_quality}, new={new_quality}")
+                
+                # Compare qualities
+                if self.config.is_quality_better(new_quality, existing_quality):
+                    # New quality is better - replace
+                    existing_full_path = f"{dest_folder}/{f.name}"
+                    return ('replace', existing_full_path, remote)
+                else:
+                    # Existing quality is same or better - delete source
+                    existing_full_path = f"{dest_folder}/{f.name}"
+                    return ('delete_source', existing_full_path, remote)
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error checking destination existence: {e}")
+            return None
     
     def _try_ai_fallback(self, remote: str, path: str, filename: str,
                          parent_folder: str, content_type: str) -> Optional[MoveDecision]:
