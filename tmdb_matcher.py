@@ -1,6 +1,7 @@
 """
 TMDB API Integration for Media File Organizer
 Matches parsed filenames to TMDB entries for accurate metadata
+With AI-powered fallback for unrecognized filenames
 """
 
 import logging
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 import requests
 
 from filename_parser import ParsedFilename
+from title_normalizer import normalize_title, get_normalizer
 
 logger = logging.getLogger(__name__)
 
@@ -230,30 +232,35 @@ class TMDBMatcher:
         
         return min(confidence, 1.0)
     
-    def match(self, parsed: ParsedFilename, content_type: str = None) -> Optional[TMDBMatch]:
+    def _search_with_title(self, title: str, year: Optional[int], 
+                            is_series: bool, parsed: ParsedFilename) -> Tuple[Optional[TMDBMatch], float]:
         """
-        Find the best TMDB match for a parsed filename.
-        
-        Args:
-            parsed: ParsedFilename from parser
-            content_type: Hint for content type ('movie', 'tvshow', 'anime', 'kdrama')
-        
-        Returns:
-            TMDBMatch if found, None otherwise
+        Internal search helper that returns best match and confidence.
         """
-        # Determine search type
-        is_series = parsed.is_series or content_type in ('tvshow', 'anime', 'kdrama')
-        
-        logger.info(f"Matching: '{parsed.title}' (year={parsed.year}, series={is_series})")
-        
         best_match = None
         best_confidence = 0.0
         
+        # Create a temporary parsed object with the new title
+        temp_parsed = ParsedFilename(
+            original_filename=parsed.original_filename,
+            title=title,
+            year=year or parsed.year,
+            season=parsed.season,
+            episode=parsed.episode,
+            quality=parsed.quality,
+            source=parsed.source,
+            codec=parsed.codec,
+            audio=parsed.audio,
+            is_series=parsed.is_series,
+            extension=parsed.extension,
+            languages=parsed.languages
+        )
+        
         # Try TV search first if it looks like a series
         if is_series:
-            results = self.search_tv(parsed.title, parsed.year)
-            for result in results[:5]:  # Check top 5 results
-                confidence = self._calculate_match_confidence(result, parsed, is_tv=True)
+            results = self.search_tv(title, year)
+            for result in results[:5]:
+                confidence = self._calculate_match_confidence(result, temp_parsed, is_tv=True)
                 if confidence > best_confidence:
                     best_confidence = confidence
                     release_date = result.get('first_air_date', '')
@@ -271,9 +278,9 @@ class TMDBMatcher:
         
         # Try movie search if not series or if TV search had low confidence
         if not is_series or best_confidence < 0.5:
-            results = self.search_movie(parsed.title, parsed.year)
+            results = self.search_movie(title, year)
             for result in results[:5]:
-                confidence = self._calculate_match_confidence(result, parsed, is_tv=False)
+                confidence = self._calculate_match_confidence(result, temp_parsed, is_tv=False)
                 if confidence > best_confidence:
                     best_confidence = confidence
                     release_date = result.get('release_date', '')
@@ -288,6 +295,72 @@ class TMDBMatcher:
                         vote_average=result.get('vote_average', 0),
                         confidence=confidence
                     )
+        
+        return best_match, best_confidence
+
+    def match(self, parsed: ParsedFilename, content_type: str = None, 
+              folder_name: str = "") -> Optional[TMDBMatch]:
+        """
+        Find the best TMDB match for a parsed filename.
+        Uses AI-powered fallback when initial search fails.
+        
+        Args:
+            parsed: ParsedFilename from parser
+            content_type: Hint for content type ('movie', 'tvshow', 'anime', 'kdrama')
+            folder_name: Original folder name for context
+        
+        Returns:
+            TMDBMatch if found, None otherwise
+        """
+        # Determine search type
+        is_series = parsed.is_series or content_type in ('tvshow', 'anime', 'kdrama')
+        
+        logger.info(f"Matching: '{parsed.title}' (year={parsed.year}, series={is_series})")
+        
+        # Step 1: Try with original parsed title
+        best_match, best_confidence = self._search_with_title(
+            parsed.title, parsed.year, is_series, parsed
+        )
+        
+        # Step 2: If no good match (confidence < 0.4), try with AI/heuristic normalization
+        if best_confidence < 0.4:
+            logger.info(f"Low confidence ({best_confidence:.2f}), trying AI normalization...")
+            
+            try:
+                normalized_title, normalized_year, method = normalize_title(
+                    parsed.original_filename, folder_name
+                )
+                
+                # Only retry if normalized title is different
+                if normalized_title.lower() != parsed.title.lower():
+                    logger.info(f"Normalized title: '{parsed.title}' -> '{normalized_title}' (via {method})")
+                    
+                    fallback_match, fallback_confidence = self._search_with_title(
+                        normalized_title, normalized_year or parsed.year, is_series, parsed
+                    )
+                    
+                    if fallback_confidence > best_confidence:
+                        best_match = fallback_match
+                        best_confidence = fallback_confidence
+                        logger.info(f"Fallback improved match: confidence {fallback_confidence:.2f}")
+            except Exception as e:
+                logger.warning(f"AI normalization failed: {e}")
+        
+        # Step 3: If still no match, try with just the first few words
+        if best_confidence < 0.3 and best_match is None:
+            # Try first 2-3 significant words only
+            words = parsed.title.split()[:3]
+            if len(words) >= 1:
+                short_title = ' '.join(words)
+                logger.info(f"Trying short title: '{short_title}'")
+                
+                short_match, short_confidence = self._search_with_title(
+                    short_title, parsed.year, is_series, parsed
+                )
+                
+                if short_confidence > best_confidence:
+                    best_match = short_match
+                    best_confidence = short_confidence
         
         if best_match:
             logger.info(f"Matched: '{parsed.title}' -> '{best_match.title}' "

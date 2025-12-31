@@ -6,7 +6,8 @@ services:
     container_name: media-organizer
     restart: unless-stopped
     environment:
-      - TMDB_API_KEY=07204b56f116aa64c5b68ec20c12ae75
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - SCAN_INTERVAL=3600
       - DRY_RUN=false
       - LOG_LEVEL=INFO
