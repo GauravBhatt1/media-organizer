@@ -1,10 +1,12 @@
 """
 Decision Engine for Media File Organizer
 Determines folder structure, quality replacement, and move operations
-Now with AI-first approach for intelligent decision making
+
+Flow: TMDB first -> Web Search correction -> Retry TMDB -> AI fallback (optional)
 """
 
 import logging
+import os
 import re
 from typing import Optional, Tuple, Dict, Any
 from dataclasses import dataclass
@@ -14,7 +16,6 @@ from config_loader import Config
 from database import Database
 from filename_parser import FilenameParser, ParsedFilename
 from tmdb_matcher import TMDBMatcher, TMDBMatch
-from ai_orchestrator import get_orchestrator, AIDecision
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,17 @@ class MoveDecision:
 class DecisionEngine:
     """
     Makes decisions about how to organize media files.
-    Handles folder structure, quality comparison, and replacement logic.
+    
+    Decision Flow:
+    1. Parse filename and extract metadata
+    2. Search TMDB with parsed title
+    3. If TMDB fails, use web search to verify/correct title
+    4. Retry TMDB with corrected title
+    5. If still fails and AI enabled, use AI as last resort
     """
+    
+    # Minimum confidence threshold for TMDB matches
+    TMDB_CONFIDENCE_THRESHOLD = 0.6
     
     def __init__(self, config: Config, db: Database, 
                  parser: FilenameParser, tmdb: TMDBMatcher):
@@ -67,11 +77,30 @@ class DecisionEngine:
         self.db = db
         self.parser = parser
         self.tmdb = tmdb
+        
+        # Lazy-load web searcher (avoid import if not needed)
+        self._web_searcher = None
+        
+        # AI is optional and disabled by default
+        self.use_ai_fallback = os.environ.get('USE_AI_FALLBACK', 'false').lower() == 'true'
+    
+    @property
+    def web_searcher(self):
+        """Lazy-load web searcher."""
+        if self._web_searcher is None:
+            try:
+                from web_search import WebSearcher
+                self._web_searcher = WebSearcher()
+                logger.debug("Web searcher initialized")
+            except Exception as e:
+                logger.warning(f"Web searcher not available: {e}")
+                self._web_searcher = False  # Mark as unavailable
+        return self._web_searcher if self._web_searcher else None
     
     def decide(self, remote: str, path: str) -> MoveDecision:
         """
         Decide what to do with a file.
-        Uses AI-first approach, with TMDB fallback.
+        Uses TMDB-first approach with web search fallback.
         
         Args:
             remote: Source remote name
@@ -86,93 +115,10 @@ class DecisionEngine:
         
         logger.info(f"Making decision for: {remote}:{path}")
         
-        # Get content type hint from remote
+        # Get content type hint from remote config
         content_type = self.config.get_remote_type(remote)
         
-        # STEP 1: Try AI Orchestrator first (primary brain)
-        try:
-            orchestrator = get_orchestrator()
-            ai_decision = orchestrator.analyze(filename, parent_folder, content_type)
-            
-            # If AI has high confidence, use its decision directly
-            if ai_decision.confidence >= 0.7:
-                logger.info(f"AI decision (confidence {ai_decision.confidence:.0%}): {ai_decision.title}")
-                
-                # Build destination path from AI decision
-                destination_path = f"{ai_decision.destination_folder}/{ai_decision.destination_filename}"
-                
-                # For quality replacement, we still need TMDB ID
-                # Try quick TMDB lookup with AI's clean title
-                tmdb_id = None
-                tmdb_type = None
-                
-                try:
-                    parsed_for_tmdb = ParsedFilename(
-                        original_filename=filename,
-                        title=ai_decision.title,
-                        year=ai_decision.year,
-                        season=ai_decision.season,
-                        episode=ai_decision.episode,
-                        quality=ai_decision.quality,
-                        source=None,
-                        codec=None,
-                        audio=None,
-                        is_series=ai_decision.category in ('tvshow', 'anime', 'kdrama'),
-                        extension=path_obj.suffix,
-                        languages=ai_decision.languages
-                    )
-                    tmdb_match = self.tmdb.match(parsed_for_tmdb, ai_decision.category)
-                    if tmdb_match and tmdb_match.confidence >= 0.5:
-                        tmdb_id = tmdb_match.tmdb_id
-                        tmdb_type = tmdb_match.tmdb_type
-                except Exception as e:
-                    logger.debug(f"TMDB lookup failed: {e}")
-                
-                # Check quality replacement
-                action = 'move'
-                file_to_delete = None
-                delete_remote = None
-                
-                if tmdb_id:
-                    action, file_to_delete, delete_remote = self._check_quality_replacement(
-                        tmdb_id=tmdb_id,
-                        tmdb_type=tmdb_type,
-                        season=ai_decision.season,
-                        episode=ai_decision.episode,
-                        new_quality=ai_decision.quality,
-                        destination_path=destination_path,
-                        remote=remote
-                    )
-                
-                return MoveDecision(
-                    action=action,
-                    source_remote=remote,
-                    source_path=path,
-                    destination_remote=remote,
-                    destination_path=destination_path,
-                    tmdb_id=tmdb_id,
-                    tmdb_type=tmdb_type,
-                    title=ai_decision.title,
-                    year=ai_decision.year,
-                    season=ai_decision.season,
-                    episode=ai_decision.episode,
-                    quality=ai_decision.quality,
-                    content_type=ai_decision.category,
-                    file_to_delete=file_to_delete,
-                    delete_remote=delete_remote
-                )
-        except Exception as e:
-            logger.warning(f"AI orchestrator failed, falling back to TMDB: {e}")
-        
-        # STEP 2: Fallback to traditional TMDB-based approach
-        return self._decide_with_tmdb(remote, path, filename, parent_folder, content_type)
-    
-    def _decide_with_tmdb(self, remote: str, path: str, filename: str, 
-                          parent_folder: str, content_type: str) -> MoveDecision:
-        """Traditional TMDB-based decision making (fallback)."""
-        path_obj = PurePosixPath(path)
-        
-        # Parse filename first
+        # STEP 1: Parse filename
         parsed = self.parser.parse(filename)
         
         # If filename parsing gave poor results, try parent folder name
@@ -182,29 +128,120 @@ class DecisionEngine:
                 folder_parsed = self.parser.parse(parent_folder)
                 parsed = self._merge_parsed(parsed, folder_parsed)
         
-        if parsed.quality == "Unknown":
-            logger.debug(f"Unknown quality for {filename}, defaulting to 1080p")
+        logger.debug(f"Parsed: title='{parsed.title}', year={parsed.year}, "
+                    f"S{parsed.season}E{parsed.episode}, quality={parsed.quality}")
         
-        # Match with TMDB
-        tmdb_match = self.tmdb.match(parsed, content_type, folder_name=parent_folder)
+        # STEP 2: Try TMDB first
+        tmdb_match = self._try_tmdb_match(parsed, content_type, parent_folder)
         
-        if not tmdb_match:
-            return MoveDecision(
-                action='error',
-                source_remote=remote,
-                source_path=path,
-                destination_remote=remote,
-                destination_path=path,
-                tmdb_id=None,
-                tmdb_type=None,
+        if tmdb_match and tmdb_match.confidence >= self.TMDB_CONFIDENCE_THRESHOLD:
+            logger.info(f"TMDB match found: {tmdb_match.title} ({tmdb_match.year}) "
+                       f"[confidence: {tmdb_match.confidence:.0%}]")
+            return self._build_decision_from_tmdb(
+                remote, path, parsed, tmdb_match, content_type
+            )
+        
+        # STEP 3: Use web search to verify/correct title
+        corrected_title = None
+        corrected_year = None
+        corrected_type = None
+        
+        if self.web_searcher:
+            logger.info(f"TMDB match insufficient, trying web search for: {parsed.title}")
+            
+            web_result = self.web_searcher.search_title(
                 title=parsed.title,
                 year=parsed.year,
+                media_type=self._get_media_type_hint(content_type, parsed)
+            )
+            
+            if web_result and web_result.get('verified_title'):
+                corrected_title = web_result['verified_title']
+                corrected_year = web_result.get('year')
+                corrected_type = web_result.get('media_type')
+                
+                logger.info(f"Web search corrected title: '{parsed.title}' -> '{corrected_title}'")
+        
+        # STEP 4: Retry TMDB with corrected title
+        if corrected_title:
+            corrected_parsed = ParsedFilename(
+                original_filename=parsed.original_filename,
+                title=corrected_title,
+                year=corrected_year or parsed.year,
                 season=parsed.season,
                 episode=parsed.episode,
                 quality=parsed.quality,
-                content_type=content_type,
-                error_message=f"No TMDB match found for: {parsed.title}"
+                is_series=corrected_type == 'tv' or parsed.is_series,
+                extension=parsed.extension,
+                languages=parsed.languages
             )
+            
+            # Update content type if web search found it
+            if corrected_type:
+                if corrected_type == 'tv':
+                    content_type = content_type if content_type in ('anime', 'kdrama') else 'tvshow'
+                elif corrected_type == 'movie':
+                    content_type = 'movie'
+            
+            tmdb_match = self._try_tmdb_match(corrected_parsed, content_type, parent_folder)
+            
+            if tmdb_match and tmdb_match.confidence >= self.TMDB_CONFIDENCE_THRESHOLD:
+                logger.info(f"TMDB match after web correction: {tmdb_match.title} ({tmdb_match.year})")
+                return self._build_decision_from_tmdb(
+                    remote, path, corrected_parsed, tmdb_match, content_type
+                )
+        
+        # STEP 5: AI fallback (optional, disabled by default)
+        if self.use_ai_fallback:
+            try:
+                ai_decision = self._try_ai_fallback(remote, path, filename, parent_folder, content_type)
+                if ai_decision:
+                    return ai_decision
+            except Exception as e:
+                logger.warning(f"AI fallback failed: {e}")
+        
+        # STEP 6: No match found - return error
+        return MoveDecision(
+            action='error',
+            source_remote=remote,
+            source_path=path,
+            destination_remote=remote,
+            destination_path=path,
+            tmdb_id=None,
+            tmdb_type=None,
+            title=parsed.title,
+            year=parsed.year,
+            season=parsed.season,
+            episode=parsed.episode,
+            quality=parsed.quality,
+            content_type=content_type,
+            error_message=f"No TMDB match found for: {parsed.title}"
+        )
+    
+    def _try_tmdb_match(self, parsed: ParsedFilename, content_type: str, 
+                        folder_name: str = "") -> Optional[TMDBMatch]:
+        """Try to match with TMDB."""
+        try:
+            return self.tmdb.match(parsed, content_type, folder_name=folder_name)
+        except Exception as e:
+            logger.warning(f"TMDB match error: {e}")
+            return None
+    
+    def _get_media_type_hint(self, content_type: str, parsed: ParsedFilename) -> Optional[str]:
+        """Get media type hint for web search."""
+        if content_type == 'movie':
+            return 'movie'
+        elif content_type in ('tvshow', 'anime', 'kdrama'):
+            return 'tv'
+        elif parsed.is_series or parsed.season or parsed.episode:
+            return 'tv'
+        return None
+    
+    def _build_decision_from_tmdb(self, remote: str, path: str, 
+                                   parsed: ParsedFilename, tmdb_match: TMDBMatch,
+                                   content_type: str) -> MoveDecision:
+        """Build MoveDecision from TMDB match."""
+        path_obj = PurePosixPath(path)
         
         # Use TMDB data for accurate title and year
         title = self._clean_title(tmdb_match.title)
@@ -261,6 +298,89 @@ class DecisionEngine:
             delete_remote=delete_remote
         )
     
+    def _try_ai_fallback(self, remote: str, path: str, filename: str,
+                         parent_folder: str, content_type: str) -> Optional[MoveDecision]:
+        """Try AI orchestrator as last resort (optional)."""
+        try:
+            from ai_orchestrator import get_orchestrator, AIDecision
+            
+            orchestrator = get_orchestrator()
+            if not orchestrator.client:
+                logger.debug("AI not available (no API key)")
+                return None
+            
+            ai_decision = orchestrator.analyze(filename, parent_folder, content_type)
+            
+            if ai_decision.confidence >= 0.7:
+                logger.info(f"AI decision (confidence {ai_decision.confidence:.0%}): {ai_decision.title}")
+                
+                # Build destination path from AI decision
+                destination_path = f"{ai_decision.destination_folder}/{ai_decision.destination_filename}"
+                
+                # Try TMDB lookup for quality replacement tracking
+                tmdb_id = None
+                tmdb_type = None
+                path_obj = PurePosixPath(path)
+                
+                try:
+                    parsed_for_tmdb = ParsedFilename(
+                        original_filename=filename,
+                        title=ai_decision.title,
+                        year=ai_decision.year,
+                        season=ai_decision.season,
+                        episode=ai_decision.episode,
+                        quality=ai_decision.quality,
+                        is_series=ai_decision.category in ('tvshow', 'anime', 'kdrama'),
+                        extension=path_obj.suffix,
+                        languages=ai_decision.languages
+                    )
+                    tmdb_match = self.tmdb.match(parsed_for_tmdb, ai_decision.category)
+                    if tmdb_match and tmdb_match.confidence >= 0.5:
+                        tmdb_id = tmdb_match.tmdb_id
+                        tmdb_type = tmdb_match.tmdb_type
+                except Exception as e:
+                    logger.debug(f"TMDB lookup for AI decision failed: {e}")
+                
+                # Check quality replacement
+                action = 'move'
+                file_to_delete = None
+                delete_remote = None
+                
+                if tmdb_id:
+                    action, file_to_delete, delete_remote = self._check_quality_replacement(
+                        tmdb_id=tmdb_id,
+                        tmdb_type=tmdb_type,
+                        season=ai_decision.season,
+                        episode=ai_decision.episode,
+                        new_quality=ai_decision.quality,
+                        destination_path=destination_path,
+                        remote=remote
+                    )
+                
+                return MoveDecision(
+                    action=action,
+                    source_remote=remote,
+                    source_path=path,
+                    destination_remote=remote,
+                    destination_path=destination_path,
+                    tmdb_id=tmdb_id,
+                    tmdb_type=tmdb_type,
+                    title=ai_decision.title,
+                    year=ai_decision.year,
+                    season=ai_decision.season,
+                    episode=ai_decision.episode,
+                    quality=ai_decision.quality,
+                    content_type=ai_decision.category,
+                    file_to_delete=file_to_delete,
+                    delete_remote=delete_remote
+                )
+        except ImportError:
+            logger.debug("AI orchestrator not available")
+        except Exception as e:
+            logger.warning(f"AI fallback error: {e}")
+        
+        return None
+    
     def _is_generic_parse(self, parsed) -> bool:
         """Check if parsed result is too generic (likely just file extension)."""
         generic_names = {'movie', 'video', 'film', 'sample', 'rarbg', 'yify', 'yts'}
@@ -278,8 +398,6 @@ class DecisionEngine:
     
     def _merge_parsed(self, file_parsed, folder_parsed):
         """Merge parsed info from filename and folder, preferring folder for title/year."""
-        from filename_parser import ParsedFilename
-        
         # Use folder title/year if file title is generic
         title = folder_parsed.title if not self._is_generic_parse(folder_parsed) else file_parsed.title
         year = folder_parsed.year or file_parsed.year
