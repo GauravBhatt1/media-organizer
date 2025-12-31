@@ -248,9 +248,6 @@ class TMDBMatcher:
             season=parsed.season,
             episode=parsed.episode,
             quality=parsed.quality,
-            source=parsed.source,
-            codec=parsed.codec,
-            audio=parsed.audio,
             is_series=parsed.is_series,
             extension=parsed.extension,
             languages=parsed.languages
