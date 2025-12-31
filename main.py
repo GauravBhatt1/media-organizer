@@ -195,7 +195,10 @@ class MediaOrganizer:
         # Run immediately on startup if configured
         if self.config.run_on_startup:
             logger.info("Running initial scan on startup")
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception as e:
+                logger.error(f"Error in initial scan: {e}", exc_info=True)
         
         while self.running and not self._shutdown_requested:
             # Wait for next scan interval
@@ -211,8 +214,12 @@ class MediaOrganizer:
             if self._shutdown_requested:
                 break
             
-            # Run scan
-            self.run_once()
+            # Run scan with error handling
+            try:
+                self.run_once()
+            except Exception as e:
+                logger.error(f"Error in scan cycle: {e}", exc_info=True)
+                logger.info("Will retry on next scan cycle")
         
         self.shutdown()
     
