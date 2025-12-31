@@ -1,6 +1,7 @@
 """
 Decision Engine for Media File Organizer
 Determines folder structure, quality replacement, and move operations
+Now with AI-first approach for intelligent decision making
 """
 
 import logging
@@ -13,6 +14,7 @@ from config_loader import Config
 from database import Database
 from filename_parser import FilenameParser, ParsedFilename
 from tmdb_matcher import TMDBMatcher, TMDBMatch
+from ai_orchestrator import get_orchestrator, AIDecision
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,7 @@ class DecisionEngine:
     def decide(self, remote: str, path: str) -> MoveDecision:
         """
         Decide what to do with a file.
+        Uses AI-first approach, with TMDB fallback.
         
         Args:
             remote: Source remote name
@@ -79,28 +82,111 @@ class DecisionEngine:
         """
         path_obj = PurePosixPath(path)
         filename = path_obj.name
+        parent_folder = path_obj.parent.name if path_obj.parent.name not in ('.', '') else ""
+        
         logger.info(f"Making decision for: {remote}:{path}")
+        
+        # Get content type hint from remote
+        content_type = self.config.get_remote_type(remote)
+        
+        # STEP 1: Try AI Orchestrator first (primary brain)
+        try:
+            orchestrator = get_orchestrator()
+            ai_decision = orchestrator.analyze(filename, parent_folder, content_type)
+            
+            # If AI has high confidence, use its decision directly
+            if ai_decision.confidence >= 0.7:
+                logger.info(f"AI decision (confidence {ai_decision.confidence:.0%}): {ai_decision.title}")
+                
+                # Build destination path from AI decision
+                destination_path = f"{ai_decision.destination_folder}/{ai_decision.destination_filename}"
+                
+                # For quality replacement, we still need TMDB ID
+                # Try quick TMDB lookup with AI's clean title
+                tmdb_id = None
+                tmdb_type = None
+                
+                try:
+                    parsed_for_tmdb = ParsedFilename(
+                        original_filename=filename,
+                        title=ai_decision.title,
+                        year=ai_decision.year,
+                        season=ai_decision.season,
+                        episode=ai_decision.episode,
+                        quality=ai_decision.quality,
+                        source=None,
+                        codec=None,
+                        audio=None,
+                        is_series=ai_decision.category in ('tvshow', 'anime', 'kdrama'),
+                        extension=path_obj.suffix,
+                        languages=ai_decision.languages
+                    )
+                    tmdb_match = self.tmdb.match(parsed_for_tmdb, ai_decision.category)
+                    if tmdb_match and tmdb_match.confidence >= 0.5:
+                        tmdb_id = tmdb_match.tmdb_id
+                        tmdb_type = tmdb_match.tmdb_type
+                except Exception as e:
+                    logger.debug(f"TMDB lookup failed: {e}")
+                
+                # Check quality replacement
+                action = 'move'
+                file_to_delete = None
+                delete_remote = None
+                
+                if tmdb_id:
+                    action, file_to_delete, delete_remote = self._check_quality_replacement(
+                        tmdb_id=tmdb_id,
+                        tmdb_type=tmdb_type,
+                        season=ai_decision.season,
+                        episode=ai_decision.episode,
+                        new_quality=ai_decision.quality,
+                        destination_path=destination_path,
+                        remote=remote
+                    )
+                
+                return MoveDecision(
+                    action=action,
+                    source_remote=remote,
+                    source_path=path,
+                    destination_remote=remote,
+                    destination_path=destination_path,
+                    tmdb_id=tmdb_id,
+                    tmdb_type=tmdb_type,
+                    title=ai_decision.title,
+                    year=ai_decision.year,
+                    season=ai_decision.season,
+                    episode=ai_decision.episode,
+                    quality=ai_decision.quality,
+                    content_type=ai_decision.category,
+                    file_to_delete=file_to_delete,
+                    delete_remote=delete_remote
+                )
+        except Exception as e:
+            logger.warning(f"AI orchestrator failed, falling back to TMDB: {e}")
+        
+        # STEP 2: Fallback to traditional TMDB-based approach
+        return self._decide_with_tmdb(remote, path, filename, parent_folder, content_type)
+    
+    def _decide_with_tmdb(self, remote: str, path: str, filename: str, 
+                          parent_folder: str, content_type: str) -> MoveDecision:
+        """Traditional TMDB-based decision making (fallback)."""
+        path_obj = PurePosixPath(path)
         
         # Parse filename first
         parsed = self.parser.parse(filename)
         
         # If filename parsing gave poor results, try parent folder name
         if self._is_generic_parse(parsed):
-            parent_folder = path_obj.parent.name
             if parent_folder and parent_folder not in ('.', 'files'):
                 logger.debug(f"Filename generic, trying folder name: {parent_folder}")
                 folder_parsed = self.parser.parse(parent_folder)
-                # Use folder metadata if better
                 parsed = self._merge_parsed(parsed, folder_parsed)
         
         if parsed.quality == "Unknown":
             logger.debug(f"Unknown quality for {filename}, defaulting to 1080p")
         
-        # Get content type from remote
-        content_type = self.config.get_remote_type(remote)
-        
         # Match with TMDB
-        tmdb_match = self.tmdb.match(parsed, content_type)
+        tmdb_match = self.tmdb.match(parsed, content_type, folder_name=parent_folder)
         
         if not tmdb_match:
             return MoveDecision(
@@ -161,7 +247,7 @@ class DecisionEngine:
             action=action,
             source_remote=remote,
             source_path=path,
-            destination_remote=remote,  # Stay in same remote
+            destination_remote=remote,
             destination_path=destination_path,
             tmdb_id=tmdb_match.tmdb_id,
             tmdb_type=tmdb_match.tmdb_type,
