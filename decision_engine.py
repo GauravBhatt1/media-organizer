@@ -572,6 +572,73 @@ class DecisionEngine:
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         return cleaned
     
+    # Valid languages for folder/file naming - must match FilenameParser.LANGUAGE_PATTERNS
+    # Maps lowercase language names to their canonical display form
+    VALID_LANGUAGES = {
+        'hindi': 'Hindi',
+        'english': 'English', 
+        'englis': 'English',  # Handle partial match from parser regex
+        'tamil': 'Tamil',
+        'telugu': 'Telugu',
+        'kannada': 'Kannada',
+        'malayalam': 'Malayalam',
+        'marathi': 'Marathi',
+        'punjabi': 'Punjabi',
+        'bengali': 'Bengali',
+        'gujarati': 'Gujarati',
+        'gujrati': 'Gujarati',  # Alternate spelling
+        'korean': 'Korean',
+        'japanese': 'Japanese',
+        'chinese': 'Chinese',
+        'spanish': 'Spanish',
+        'french': 'French',
+        'german': 'German',
+        'italian': 'Italian',
+        'russian': 'Russian',
+        'urdu': 'Urdu',
+        'portuguese': 'Portuguese',
+        'thai': 'Thai',
+        'arabic': 'Arabic',
+        'turkish': 'Turkish',
+        'dutch': 'Dutch',
+        'polish': 'Polish',
+        'vietnamese': 'Vietnamese',
+        'indonesian': 'Indonesian',
+    }
+    
+    def _normalize_languages(self, languages: list) -> str:
+        """
+        Normalize language list to consistent, sorted string.
+        Filters out invalid entries like release group names (e.g., "Telly").
+        
+        Args:
+            languages: Raw language list from parser
+            
+        Returns:
+            Normalized language string like "English-Hindi" (sorted alphabetically)
+        """
+        if not languages:
+            return ""
+        
+        # Filter to only valid languages and normalize to canonical form
+        valid = []
+        for lang in languages:
+            lang_lower = lang.lower().strip()
+            
+            # Skip non-language entries like "Dual Audio", "Multi"
+            if lang_lower in ('dual audio', 'multi'):
+                continue
+            
+            # Look up canonical form - this filters out release groups like "Telly"
+            if lang_lower in self.VALID_LANGUAGES:
+                valid.append(self.VALID_LANGUAGES[lang_lower])
+        
+        # Remove duplicates and sort alphabetically for consistency
+        # This ensures "Hindi-English" and "English-Hindi" become "English-Hindi"
+        valid = sorted(set(valid))
+        
+        return "-".join(valid) if valid else ""
+    
     def _generate_destination_path(self, title: str, year: Optional[int],
                                     season: Optional[int], episode: Optional[int],
                                     quality: str, extension: str,
@@ -581,6 +648,9 @@ class DecisionEngine:
         
         Movies: Movies/Movie Name (Year)/Movie Name (Year) - Hindi-English - 1080p.ext
         Series: TV Shows/Show Name (Year)/Season XX/Show Name SXXEXX - Hindi.ext
+        
+        IMPORTANT: Folder names use normalized, sorted language strings to prevent
+        duplicate folders when different episodes have different language order.
         """
         year_str = str(year) if year else "Unknown"
         languages = languages or []
@@ -588,8 +658,9 @@ class DecisionEngine:
         # Get destination folder from config (e.g., "Movies", "TV Shows")
         dest_folder = self.config.get_destination_folder(content_type)
         
-        # Build language string (e.g., "Hindi-English")
-        lang_str = "-".join(languages) if languages else ""
+        # CRITICAL: Normalize languages to prevent duplicate folders
+        # This ensures "Hindi-English" and "English-Hindi" become the same
+        lang_str = self._normalize_languages(languages)
         
         if content_type == 'movie':
             # Movies: Movies/Movie Name (Year) - Hindi-English/Movie Name (Year) - Hindi-English - 1080p.ext
